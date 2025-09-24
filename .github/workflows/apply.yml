@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       dir:
-        description: "Terraform directory"
+        description: "Terraform directory to apply (e.g., ./ or terraform/prod)"
         required: true
-        default: "terraform/01-s3-bucket"
+        default: "."          # << use repo root by default
       ref:
         description: "Git ref to apply (usually main)"
         required: true
@@ -24,7 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { ref: ${{ inputs.ref }} }
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

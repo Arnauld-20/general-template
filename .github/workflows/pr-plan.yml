@@ -7,15 +7,13 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # for OIDC -> AWS
+  id-token: write  # OIDC -> AWS
 
 env:
   AWS_REGION: us-east-1
-  TF_DIR: terraform/01-s3-bucket
 
 jobs:
   plan:
-    name: Plan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
@@ -23,7 +21,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials with OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -33,52 +31,83 @@ jobs:
         with:
           terraform_version: 1.8.5
 
-      - name: Init
-        working-directory: ${{ env.TF_DIR }}
-        run: terraform init -input=false
-
-      - name: Validate
-        working-directory: ${{ env.TF_DIR }}
-        run: terraform validate
-
-      - name: Plan (detailed exit code)
-        id: tfplan
-        working-directory: ${{ env.TF_DIR }}
+      - name: Find Terraform directories (include repo root)
+        id: find
+        shell: bash
         run: |
-          set +e
-          terraform plan -input=false -no-color -out=tfplan -detailed-exitcode
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          if [ $code -eq 1 ]; then
-            echo "Plan failed"; exit 1
-          fi
-          terraform show -json tfplan > tfplan.json
-          terraform show -no-color tfplan > tfplan.txt
           set -e
+          D1=$(git ls-files 'terraform/**.tf' | awk -F/ '$1=="terraform"{print $1"/"$2}' | sort -u)
+          D2=""
+          if git ls-files '*.tf' | grep -qE '^[^/]+\.tf$'; then
+            D2="."
+          fi
+          DIRS="$(printf "%s\n%s\n" "$D1" "$D2" | sed '/^$/d' | sort -u)"
+          echo "Found dirs:"; echo "$DIRS"
+          if [ -z "$DIRS" ]; then
+            echo "dirs=[]" >> $GITHUB_OUTPUT
+          else
+            JSON=$(printf '%s\n' "$DIRS" | jq -R . | jq -s .)
+            echo "dirs=$JSON" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Summary
-        working-directory: ${{ env.TF_DIR }}
+      - name: Plan each directory
+        if: steps.find.outputs.dirs != '[]'
+        shell: bash
         run: |
-          echo "### Terraform Plan Summary ($GITHUB_WORKFLOW)" >> $GITHUB_STEP_SUMMARY
-          jq -r '
-            ( .resource_changes // [] )
-            | map(.change.actions
-              | if . == ["create"] then "create"
-                elif . == ["update"] then "update"
-                elif . == ["delete"] then "delete"
-                elif . == ["delete","create"] or . == ["create","delete"] then "replace"
-                else "other" end)
-            | reduce .[] as $a ({"create":0,"update":0,"delete":0,"replace":0,"other":0}; .[$a]+=1)
-          ' tfplan.json > summary.json
-          cat summary.json >> $GITHUB_STEP_SUMMARY
-          echo -e "\nExit code: ${{ steps.tfplan.outputs.exit_code }} (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
+          set -e
+          mkdir -p artifacts
+          for d in $(echo '${{ steps.find.outputs.dirs }}' | jq -r '.[]'); do
+            echo "=== Planning $d ==="
+            pushd "$d" >/dev/null
+            terraform init -input=false
+            terraform validate
+            set +e
+            terraform plan -input=false -no-color -out=tfplan -detailed-exitcode
+            code=$?
+            terraform show -json tfplan > tfplan.json || true
+            terraform show -no-color tfplan > tfplan.txt || true
+            set -e
 
-      - name: Upload plan artifact
+            # Simple summary JSON
+            if [ -s tfplan.json ]; then
+              jq -r '
+                ( .resource_changes // [] )
+                | map(.change.actions
+                  | if . == ["create"] then "create"
+                    elif . == ["update"] then "update"
+                    elif . == ["delete"] then "delete"
+                    elif . == ["delete","create"] or . == ["create","delete"] then "replace"
+                    else "other" end)
+                | reduce .[] as $a ({"create":0,"update":0,"delete":0,"replace":0,"other":0}; .[$a]+=1)
+              ' tfplan.json > summary.json || echo '{}' > summary.json
+            else
+              echo '{}' > summary.json
+            fi
+
+            echo "## $d — exit code: $code (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat summary.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            popd >/dev/null
+            safe=$(echo "$d" | tr '/' '-'); [ "$safe" = "." ] && safe="root"
+            mkdir -p "artifacts/$safe"
+            cp -f "$d/tfplan" "artifacts/$safe/tfplan" 2>/dev/null || true
+            cp -f "$d/tfplan.json" "artifacts/$safe/tfplan.json" 2>/dev/null || true
+            cp -f "$d/tfplan.txt" "artifacts/$safe/tfplan.txt" 2>/dev/null || true
+            cp -f "$d/summary.json" "artifacts/$safe/summary.json" 2>/dev/null || true
+
+            # Fail only on real plan errors
+            if [ $code -eq 1 ]; then
+              echo "Plan failed in $d"; exit 1
+            fi
+          done
+
+      - name: Upload plan artifacts
+        if: steps.find.outputs.dirs != '[]'
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan-${{ github.run_id }}
-          path: |
-            ${{ env.TF_DIR }}/tfplan
-            ${{ env.TF_DIR }}/tfplan.json
-            ${{ env.TF_DIR }}/tfplan.txt
-            ${{ env.TF_DIR }}/summary.json
+          name: tfplans-${{ github.run_id }}
+          path: artifacts/**
