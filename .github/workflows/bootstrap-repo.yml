@@ -35,6 +35,6 @@ jobs:
           OWNER="${{ github.repository_owner }}"
           NAME="${{ inputs.new_repo_name }}"
           VIS="${{ inputs.visibility }}"
-          gh repo create "$OWNER/$NAME" --template "$GITHUB_REPOSITORY" --"$VIS" --enable-issues --disable-wiki
+          gh repo create "$OWNER/$NAME" --template "$GITHUB_REPOSITORY" --"$VIS" --disable-issues --disable-wiki
           echo "url=https://github.com/$OWNER/$NAME" >> $GITHUB_OUTPUT
           echo "### Created: https://github.com/$OWNER/$NAME" >> $GITHUB_STEP_SUMMARY
