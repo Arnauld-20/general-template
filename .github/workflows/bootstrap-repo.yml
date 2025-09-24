@@ -1,3 +1,4 @@
+# .github/workflows/bootstrap-repo.yml
 name: Bootstrap New Repo from Template
 
 on:
@@ -18,23 +19,55 @@ permissions:
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
-    env:
-       GH_TOKEN: ${{ github.token }} # PAT with repo + workflow
     steps:
-      - name: Confirm this repo is a template
+      - name: Sanity check (this repo must be a template)
+        env:
+          GH_TOKEN: ${{ secrets.REPO_CREATE_TOKEN }}
         run: |
-          is_template=$(gh repo view "$GITHUB_REPOSITORY" --json isTemplate -q .isTemplate)
+          set -e
+          is_template=$(gh repo view "$GITHUB_REPOSITORY" --json isTemplate -q .isTemplate || echo false)
           if [ "$is_template" != "true" ]; then
             echo "::error::Enable 'Template repository' in Settings → General for this repo."
             exit 1
           fi
 
-      - name: Create new repo from this template
+      - name: Create new repo from template (REST)
         id: create
+        env:
+          PAT: ${{ secrets.GH_TOKEN }}   # PAT with 'repo' (and 'workflow' is fine)
+          OWNER: ${{ github.repository_owner }}
+          TEMPLATE: ${{ github.repository }}      # e.g. owner/template-repo
+          NAME: ${{ inputs.new_repo_name }}
+          VIS: ${{ inputs.visibility }}
         run: |
-          OWNER="${{ github.repository_owner }}"
-          NAME="${{ inputs.new_repo_name }}"
-          VIS="${{ inputs.visibility }}"
-          gh repo create "$OWNER/$NAME" --template "$GITHUB_REPOSITORY" --"$VIS" --disable-issues --disable-wiki
-          echo "url=https://github.com/$OWNER/$NAME" >> $GITHUB_OUTPUT
-          echo "### Created: https://github.com/$OWNER/$NAME" >> $GITHUB_STEP_SUMMARY
+          set -e
+          if [ -z "$PAT" ]; then
+            echo "::error::Missing secret REPO_CREATE_TOKEN"; exit 1
+          fi
+
+          # private flag for API
+          if [ "$VIS" = "private" ]; then PRIV=true; else PRIV=false; fi
+
+          # Call: POST /repos/{template_owner}/{template_repo}/generate
+          API="https://api.github.com/repos/$TEMPLATE/generate"
+          body=$(jq -n --arg owner "$OWNER" --arg name "$NAME" --argjson private $PRIV \
+                    '{owner:$owner, name:$name, private:$private}')
+          resp=$(curl -sS -X POST "$API" \
+            -H "Authorization: token $PAT" \
+            -H "Accept: application/vnd.github+json" \
+            -d "$body")
+
+          # Check for errors and extract URL
+          url=$(echo "$resp" | jq -r '.html_url // empty')
+          msg=$(echo "$resp" | jq -r '.message // empty')
+          if [ -z "$url" ]; then
+            echo "::error::Failed to create repo. API said: $msg"
+            echo "$resp" | jq .
+            exit 1
+          fi
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Created: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Output link
+        run: echo "New repo: ${{ steps.create.outputs.url }}"
