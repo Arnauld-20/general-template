@@ -1,0 +1,56 @@
+name: Bootstrap New Repo from Template
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_repo_name:
+        description: "New repository name (e.g., devops-infra)"
+        required: true
+      owner:
+        description: "Target owner/org (leave blank to use this repo's owner)"
+        required: false
+      visibility:
+        description: "Visibility"
+        type: choice
+        options: [private, public, internal]
+        default: private
+      aws_role_arn:
+        description: "(Optional) Set AWS_ROLE_ARN secret in the new repo"
+        required: false
+
+permissions:
+  contents: read  # gh uses PAT in REPO_CREATE_TOKEN to create the repo
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.REPO_CREATE_TOKEN }}  # PAT with repo + workflow
+    steps:
+      - name: Check this repo is a template
+        run: |
+          is_template=$(gh repo view "$GITHUB_REPOSITORY" --json isTemplate -q .isTemplate)
+          if [ "$is_template" != "true" ]; then
+            echo "::error::This repo is not marked as a Template. Enable it in Settings → General → Template repository."
+            exit 1
+          fi
+
+      - name: Create the new repository from this template
+        id: create
+        run: |
+          NAME="${{ inputs.new_repo_name }}"
+          OWNER="${{ inputs.owner }}"
+          [ -z "$OWNER" ] && OWNER="${{ github.repository_owner }}"
+          VIS="${{ inputs.visibility }}"
+          # Create the repo from the template
+          gh repo create "$OWNER/$NAME" --template "$GITHUB_REPOSITORY" --"$VIS" --enable-issues --disable-wiki
+          echo "owner=$OWNER" >> $GITHUB_OUTPUT
+          echo "name=$NAME"   >> $GITHUB_OUTPUT
+          echo "url=https://github.com/$OWNER/$NAME" >> $GITHUB_OUTPUT
+          echo "### Created: https://github.com/$OWNER/$NAME" >> $GITHUB_STEP_SUMMARY
+
+      - name: (Optional) Set AWS_ROLE_ARN secret in the new repo
+        if: inputs.aws_role_arn != ''
+        run: |
+          echo "${{ inputs.aws_role_arn }}" | gh secret set -R "${{ steps.create.outputs.owner }}/${{ steps.create.outputs.name }}" AWS_ROLE_ARN -b-
+          echo "Set AWS_ROLE_ARN in ${{ steps.create.outputs.owner }}/${{ steps.create.outputs.name }}" >> $GITHUB_STEP_SUMMARY
