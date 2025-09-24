@@ -1,0 +1,84 @@
+name: Terraform PR (Plan)
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    types: [ opened, reopened, ready_for_review, synchronize ]
+
+permissions:
+  contents: read
+  id-token: write   # for OIDC -> AWS
+
+env:
+  AWS_REGION: us-east-1
+  TF_DIR: terraform/01-s3-bucket
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -input=false
+
+      - name: Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate
+
+      - name: Plan (detailed exit code)
+        id: tfplan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          set +e
+          terraform plan -input=false -no-color -out=tfplan -detailed-exitcode
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [ $code -eq 1 ]; then
+            echo "Plan failed"; exit 1
+          fi
+          terraform show -json tfplan > tfplan.json
+          terraform show -no-color tfplan > tfplan.txt
+          set -e
+
+      - name: Summary
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          echo "### Terraform Plan Summary ($GITHUB_WORKFLOW)" >> $GITHUB_STEP_SUMMARY
+          jq -r '
+            ( .resource_changes // [] )
+            | map(.change.actions
+              | if . == ["create"] then "create"
+                elif . == ["update"] then "update"
+                elif . == ["delete"] then "delete"
+                elif . == ["delete","create"] or . == ["create","delete"] then "replace"
+                else "other" end)
+            | reduce .[] as $a ({"create":0,"update":0,"delete":0,"replace":0,"other":0}; .[$a]+=1)
+          ' tfplan.json > summary.json
+          cat summary.json >> $GITHUB_STEP_SUMMARY
+          echo -e "\nExit code: ${{ steps.tfplan.outputs.exit_code }} (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/tfplan.json
+            ${{ env.TF_DIR }}/tfplan.txt
+            ${{ env.TF_DIR }}/summary.json

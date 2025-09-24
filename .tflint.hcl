@@ -1,0 +1,3 @@
+plugin "aws" { enabled = true, version = "0.30.0" }
+rule "terraform_deprecated_interpolation" { enabled = true }
+rule "terraform_unused_declarations"     { enabled = true }

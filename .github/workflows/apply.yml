@@ -1,0 +1,44 @@
+name: Terraform (Manual Apply)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dir:
+        description: "Terraform directory"
+        required: true
+        default: "terraform/01-s3-bucket"
+      ref:
+        description: "Git ref to apply (usually main)"
+        required: true
+        default: "main"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  apply_manual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.ref }} }
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Init/Plan/Apply
+        working-directory: ${{ inputs.dir }}
+        run: |
+          terraform init -input=false
+          terraform validate
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false -auto-approve tfplan
