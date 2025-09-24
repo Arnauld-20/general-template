@@ -34,7 +34,8 @@ jobs:
       - name: Create new repo from template (REST)
         id: create
         env:
-          PAT: ${{ secrets.GH_TOKEN }}   # PAT with 'repo' (and 'workflow' is fine)
+          PAT: ${{ secrets.GH_TOKEN }}  
+          GH_TOKEN: ${{ github.token }} # PAT with 'repo' (and 'workflow' is fine)
           OWNER: ${{ github.repository_owner }}
           TEMPLATE: ${{ github.repository }}      # e.g. owner/template-repo
           NAME: ${{ inputs.new_repo_name }}
