@@ -13,10 +13,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with: { terraform_version: 1.8.5 }
+
       - name: terraform fmt (check)
         run: terraform fmt -check -recursive -diff
+
       - name: Setup TFLint
         uses: terraform-linters/setup-tflint@v4
         with: { tflint_version: v0.51.1 }
@@ -25,21 +28,22 @@ jobs:
         id: find
         shell: bash
         run: |
-          set -e
-          # Collect 'terraform/*' dirs with tf files
-          D1=$(git ls-files 'terraform/**.tf' | awk -F/ '$1=="terraform"{print $1"/"$2}' | sort -u)
-          # If repo root has any *.tf, add '.'
-          D2=""
-          if git ls-files '*.tf' | grep -qE '^[^/]+\.tf$'; then
-            D2="."
-          fi
-          DIRS="$(printf "%s\n%s\n" "$D1" "$D2" | sed '/^$/d' | sort -u)"
-          echo "Found dirs:"; echo "$DIRS"
-          if [ -z "$DIRS" ]; then
-            echo "dirs=[]" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          # All tracked *.tf files -> their directories -> unique list
+          mapfile -t DIRS < <(git ls-files -z '*.tf' \
+            | xargs -0 -n1 dirname \
+            | sed 's|^\./$|.|; s|^\./||' \
+            | sort -u)
+
+          echo "Found dirs:"
+          printf '%s\n' "${DIRS[@]}"
+
+          if [ "${#DIRS[@]}" -eq 0 ]; then
+            echo "dirs=[]" >> "$GITHUB_OUTPUT"
           else
-            JSON=$(printf '%s\n' "$DIRS" | jq -R . | jq -s .)
-            echo "dirs=$JSON" >> $GITHUB_OUTPUT
+            # compact one-line JSON array
+            JSON=$(printf '%s\n' "${DIRS[@]}" | jq -R -s -c 'split("\n")[:-1]')
+            echo "dirs=$JSON" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run TFLint per directory

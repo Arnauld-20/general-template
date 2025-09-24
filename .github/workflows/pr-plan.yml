@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # OIDC -> AWS
+  id-token: write   # OIDC -> AWS
 
 env:
   AWS_REGION: us-east-1
@@ -21,40 +21,36 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Configure AWS credentials with OIDC
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
-
       - name: Find Terraform directories (include repo root)
         id: find
         shell: bash
         run: |
-          set -e
-          D1=$(git ls-files 'terraform/**.tf' | awk -F/ '$1=="terraform"{print $1"/"$2}' | sort -u)
-          D2=""
-          if git ls-files '*.tf' | grep -qE '^[^/]+\.tf$'; then
-            D2="."
-          fi
-          DIRS="$(printf "%s\n%s\n" "$D1" "$D2" | sed '/^$/d' | sort -u)"
-          echo "Found dirs:"; echo "$DIRS"
-          if [ -z "$DIRS" ]; then
-            echo "dirs=[]" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          mapfile -t DIRS < <(git ls-files -z '*.tf' \
+            | xargs -0 -n1 dirname \
+            | sed 's|^\./$|.|; s|^\./||' \
+            | sort -u)
+          echo "Found dirs:"; printf '%s\n' "${DIRS[@]}"
+          if [ "${#DIRS[@]}" -eq 0 ]; then
+            echo "dirs=[]" >> "$GITHUB_OUTPUT"
           else
-            JSON=$(printf '%s\n' "$DIRS" | jq -R . | jq -s .)
-            echo "dirs=$JSON" >> $GITHUB_OUTPUT
+            JSON=$(printf '%s\n' "${DIRS[@]}" | jq -R -s -c 'split("\n")[:-1]')
+            echo "dirs=$JSON" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Plan each directory
         if: steps.find.outputs.dirs != '[]'
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p artifacts
           for d in $(echo '${{ steps.find.outputs.dirs }}' | jq -r '.[]'); do
             echo "=== Planning $d ==="
@@ -64,11 +60,10 @@ jobs:
             set +e
             terraform plan -input=false -no-color -out=tfplan -detailed-exitcode
             code=$?
-            terraform show -json tfplan > tfplan.json || true
-            terraform show -no-color tfplan > tfplan.txt || true
+            terraform show -json tfplan > tfplan.json 2>/dev/null || true
+            terraform show -no-color tfplan > tfplan.txt 2>/dev/null || true
             set -e
-
-            # Simple summary JSON
+            # tiny summary
             if [ -s tfplan.json ]; then
               jq -r '
                 ( .resource_changes // [] )
@@ -79,19 +74,12 @@ jobs:
                     elif . == ["delete","create"] or . == ["create","delete"] then "replace"
                     else "other" end)
                 | reduce .[] as $a ({"create":0,"update":0,"delete":0,"replace":0,"other":0}; .[$a]+=1)
-              ' tfplan.json > summary.json || echo '{}' > summary.json
+              ' tfplan.json > summary.json
             else
               echo '{}' > summary.json
             fi
-
-            echo "## $d — exit code: $code (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo '```json' >> $GITHUB_STEP_SUMMARY
-            cat summary.json >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-
             popd >/dev/null
+
             safe=$(echo "$d" | tr '/' '-'); [ "$safe" = "." ] && safe="root"
             mkdir -p "artifacts/$safe"
             cp -f "$d/tfplan" "artifacts/$safe/tfplan" 2>/dev/null || true
@@ -99,7 +87,12 @@ jobs:
             cp -f "$d/tfplan.txt" "artifacts/$safe/tfplan.txt" 2>/dev/null || true
             cp -f "$d/summary.json" "artifacts/$safe/summary.json" 2>/dev/null || true
 
-            # Fail only on real plan errors
+            echo "## $d — exit code: $code (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
+            echo '' >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat "$d/summary.json" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
             if [ $code -eq 1 ]; then
               echo "Plan failed in $d"; exit 1
             fi
@@ -110,5 +103,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tfplans-${{ github.run_id }}
-          path: artifacts/** 
-          
+          path: artifacts/**

@@ -6,7 +6,7 @@ on:
       dir:
         description: "Terraform directory to apply (e.g., ./ or terraform/prod)"
         required: true
-        default: "."          # << use repo root by default
+        default: "."
       ref:
         description: "Git ref to apply (usually main)"
         required: true
@@ -36,7 +36,17 @@ jobs:
         with:
           terraform_version: 1.8.5
 
-      - name: Init/Plan/Apply
+      - name: Sanity check path has .tf files
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="${{ inputs.dir }}"
+          [ -d "$d" ] || { echo "::error::Directory '$d' not found"; exit 1; }
+          if ! find "$d" -maxdepth 1 -name '*.tf' -print -quit | grep -q .; then
+            echo "::error::No *.tf files in '$d'"; exit 1
+          fi
+
+      - name: Init / Validate / Plan / Apply
         working-directory: ${{ inputs.dir }}
         run: |
           terraform init -input=false
