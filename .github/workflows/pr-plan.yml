@@ -22,11 +22,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Ensure required secrets exist
+      - name: Ensure backend.hcl exists
         run: |
-          test -n "${{ secrets.AWS_ROLE_ARN }}" || { echo "::error::Missing AWS_ROLE_ARN"; exit 1; }
-          test -n "${{ secrets.TF_BACKEND_BUCKET }}" || { echo "::error::Missing TF_BACKEND_BUCKET"; exit 1; }
-          test -n "${{ secrets.TF_LOCK_TABLE }}" || { echo "::error::Missing TF_LOCK_TABLE"; exit 1; }
+          test -f "${GITHUB_WORKSPACE}/backend.hcl" || { echo "::error::backend.hcl missing"; exit 1; }
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -68,13 +66,17 @@ jobs:
             echo "=== Planning $d ==="
             pushd "$d" >/dev/null
 
-            # Init with S3 backend (reconfigure every dir)
+            # Build a per-dir state key under owner/repo/
+            if [ "$d" = "." ]; then
+              KEY_SUFFIX="root/terraform.tfstate"
+            else
+              KEY_SUFFIX="$d/terraform.tfstate"
+            fi
+            KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
+
             terraform init -input=false -upgrade -reconfigure \
-              -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
-              -backend-config="key=${{ github.repository }}/terraform.tfstate" \
-              -backend-config="region=${{ env.AWS_REGION }}" \
-              -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
-              -backend-config="encrypt=true"
+              -backend-config="${GITHUB_WORKSPACE}/backend.hcl" \
+              -backend-config="key=${KEY}"
 
             terraform validate
 
@@ -88,9 +90,9 @@ jobs:
 
             safe=$(echo "$d" | tr '/' '-'); [ "$safe" = "." ] && safe="root"
             mkdir -p "artifacts/$safe"
-            cp -f "$d/tfplan"       "artifacts/$safe/tfplan"       2>/dev/null || true
-            cp -f "$d/tfplan.json"  "artifacts/$safe/tfplan.json"  2>/dev/null || true
-            cp -f "$d/tfplan.txt"   "artifacts/$safe/tfplan.txt"   2>/dev/null || true
+            cp -f "$d/tfplan"      "artifacts/$safe/tfplan"      2>/dev/null || true
+            cp -f "$d/tfplan.json" "artifacts/$safe/tfplan.json" 2>/dev/null || true
+            cp -f "$d/tfplan.txt"  "artifacts/$safe/tfplan.txt"  2>/dev/null || true
 
             echo "## $d — exit code: $code (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
             if [ -s "$d/tfplan.json" ]; then

@@ -29,11 +29,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Ensure required secrets exist
+      - name: Ensure backend.hcl exists
         run: |
-          test -n "${{ secrets.AWS_ROLE_ARN }}" || { echo "::error::Missing AWS_ROLE_ARN"; exit 1; }
-          test -n "${{ secrets.TF_BACKEND_BUCKET }}" || { echo "::error::Missing TF_BACKEND_BUCKET"; exit 1; }
-          test -n "${{ secrets.TF_LOCK_TABLE }}" || { echo "::error::Missing TF_LOCK_TABLE"; exit 1; }
+          test -f "${GITHUB_WORKSPACE}/backend.hcl" || { echo "::error::backend.hcl missing"; exit 1; }
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -59,15 +57,20 @@ jobs:
             echo "::error::No *.tf files in '$d'"; exit 1
           fi
 
-      - name: Init (with S3 backend)
+      - name: Init (with S3 backend from backend.hcl)
         working-directory: ${{ inputs.dir }}
+        shell: bash
         run: |
+          if [ "${{ inputs.dir }}" = "." ]; then
+            KEY_SUFFIX="root/terraform.tfstate"
+          else
+            KEY_SUFFIX="${{ inputs.dir }}/terraform.tfstate"
+          fi
+          KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
+
           terraform init -input=false -upgrade -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
-            -backend-config="key=${{ github.repository }}/terraform.tfstate" \
-            -backend-config="region=${{ env.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
-            -backend-config="encrypt=true"
+            -backend-config="${GITHUB_WORKSPACE}/backend.hcl" \
+            -backend-config="key=${KEY}"
 
       - name: Validate
         working-directory: ${{ inputs.dir }}
@@ -79,4 +82,4 @@ jobs:
 
       - name: Apply (manual)
         working-directory: ${{ inputs.dir }}
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform apply -input=false -auto-approve tfplan 
