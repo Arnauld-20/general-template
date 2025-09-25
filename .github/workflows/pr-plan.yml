@@ -11,6 +11,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
 jobs:
   plan:
@@ -21,14 +22,25 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Ensure required secrets exist
+        run: |
+          test -n "${{ secrets.AWS_ROLE_ARN }}" || { echo "::error::Missing AWS_ROLE_ARN"; exit 1; }
+          test -n "${{ secrets.TF_BACKEND_BUCKET }}" || { echo "::error::Missing TF_BACKEND_BUCKET"; exit 1; }
+          test -n "${{ secrets.TF_LOCK_TABLE }}" || { echo "::error::Missing TF_LOCK_TABLE"; exit 1; }
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
+
+      - name: Prep plugin cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
       - name: Find Terraform directories (include repo root)
         id: find
         shell: bash
@@ -55,16 +67,35 @@ jobs:
           for d in $(echo '${{ steps.find.outputs.dirs }}' | jq -r '.[]'); do
             echo "=== Planning $d ==="
             pushd "$d" >/dev/null
-            terraform init -input=false
+
+            # Init with S3 backend (reconfigure every dir)
+            terraform init -input=false -upgrade -reconfigure \
+              -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
+              -backend-config="key=${{ github.repository }}/terraform.tfstate" \
+              -backend-config="region=${{ env.AWS_REGION }}" \
+              -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+              -backend-config="encrypt=true"
+
             terraform validate
+
             set +e
             terraform plan -input=false -no-color -out=tfplan -detailed-exitcode
             code=$?
             terraform show -json tfplan > tfplan.json 2>/dev/null || true
             terraform show -no-color tfplan > tfplan.txt 2>/dev/null || true
             set -e
-            # tiny summary
-            if [ -s tfplan.json ]; then
+            popd >/dev/null
+
+            safe=$(echo "$d" | tr '/' '-'); [ "$safe" = "." ] && safe="root"
+            mkdir -p "artifacts/$safe"
+            cp -f "$d/tfplan"       "artifacts/$safe/tfplan"       2>/dev/null || true
+            cp -f "$d/tfplan.json"  "artifacts/$safe/tfplan.json"  2>/dev/null || true
+            cp -f "$d/tfplan.txt"   "artifacts/$safe/tfplan.txt"   2>/dev/null || true
+
+            echo "## $d — exit code: $code (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
+            if [ -s "$d/tfplan.json" ]; then
+              echo '' >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
               jq -r '
                 ( .resource_changes // [] )
                 | map(.change.actions
@@ -74,24 +105,9 @@ jobs:
                     elif . == ["delete","create"] or . == ["create","delete"] then "replace"
                     else "other" end)
                 | reduce .[] as $a ({"create":0,"update":0,"delete":0,"replace":0,"other":0}; .[$a]+=1)
-              ' tfplan.json > summary.json
-            else
-              echo '{}' > summary.json
+              ' "$d/tfplan.json" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
             fi
-            popd >/dev/null
-
-            safe=$(echo "$d" | tr '/' '-'); [ "$safe" = "." ] && safe="root"
-            mkdir -p "artifacts/$safe"
-            cp -f "$d/tfplan" "artifacts/$safe/tfplan" 2>/dev/null || true
-            cp -f "$d/tfplan.json" "artifacts/$safe/tfplan.json" 2>/dev/null || true
-            cp -f "$d/tfplan.txt" "artifacts/$safe/tfplan.txt" 2>/dev/null || true
-            cp -f "$d/summary.json" "artifacts/$safe/summary.json" 2>/dev/null || true
-
-            echo "## $d — exit code: $code (0=no changes, 2=changes)" >> $GITHUB_STEP_SUMMARY
-            echo '' >> $GITHUB_STEP_SUMMARY
-            echo '```json' >> $GITHUB_STEP_SUMMARY
-            cat "$d/summary.json" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
 
             if [ $code -eq 1 ]; then
               echo "Plan failed in $d"; exit 1

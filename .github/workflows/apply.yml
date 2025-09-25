@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       dir:
-        description: "Terraform directory to apply (e.g., ./ or terraform/prod)"
+        description: "Terraform directory to apply (e.g., ./ or terraform)"
         required: true
         default: "."
       ref:
@@ -13,28 +13,41 @@ on:
         default: "main"
 
 permissions:
-  id-token: write
   contents: read
+  id-token: write
 
 env:
   AWS_REGION: us-east-1
+  TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
 jobs:
   apply_manual:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Ensure required secrets exist
+        run: |
+          test -n "${{ secrets.AWS_ROLE_ARN }}" || { echo "::error::Missing AWS_ROLE_ARN"; exit 1; }
+          test -n "${{ secrets.TF_BACKEND_BUCKET }}" || { echo "::error::Missing TF_BACKEND_BUCKET"; exit 1; }
+          test -n "${{ secrets.TF_LOCK_TABLE }}" || { echo "::error::Missing TF_LOCK_TABLE"; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
+
+      - name: Prep plugin cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
       - name: Sanity check path has .tf files
         shell: bash
@@ -46,10 +59,24 @@ jobs:
             echo "::error::No *.tf files in '$d'"; exit 1
           fi
 
-      - name: Init / Validate / Plan / Apply
+      - name: Init (with S3 backend)
         working-directory: ${{ inputs.dir }}
         run: |
-          terraform init -input=false
-          terraform validate
-          terraform plan -input=false -out=tfplan
-          terraform apply -input=false -auto-approve tfplan
+          terraform init -input=false -upgrade -reconfigure \
+            -backend-config="bucket=${{ secrets.TF_BACKEND_BUCKET }}" \
+            -backend-config="key=${{ github.repository }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Validate
+        working-directory: ${{ inputs.dir }}
+        run: terraform validate
+
+      - name: Plan
+        working-directory: ${{ inputs.dir }}
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Apply (manual)
+        working-directory: ${{ inputs.dir }}
+        run: terraform apply -input=false -auto-approve tfplan
