@@ -32,7 +32,7 @@ jobs:
           terraform_version: 1.8.5
 
       - name: Prep plugin cache
-        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+        run: mkdir -p ~/.terraform.d/plugin-cache
 
       - name: Find Terraform directories
         id: find
@@ -61,9 +61,10 @@ jobs:
             fi
             KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
 
-            terraform init -input=false -reconfigure \
-              -backend-config="${GITHUB_WORKSPACE}/backend.hcl" \
-              -backend-config="key=${KEY}"
+            terraform init -input=false -upgrade -reconfigure \
+            -backend-config="key=${KEY}"
+
+
 
             terraform validate
             terraform plan -input=false -no-color -out=tfplan || true
