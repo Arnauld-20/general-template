@@ -1,16 +1,7 @@
-name: Terraform (Manual Apply)
+name: Terraform Apply
 
 on:
-  workflow_dispatch:
-    inputs:
-      dir:
-        description: "Terraform directory to apply (e.g., ./ or terraform)"
-        required: true
-        default: "./terraform"
-      ref:
-        description: "Git ref to apply (usually main)"
-        required: true
-        default: "main"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -21,17 +12,10 @@ env:
   TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
 jobs:
-  apply_manual:
+  apply:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Ensure backend.hcl exists
-        run: |
-          test -f "${GITHUB_WORKSPACE}/backend.hcl" || { echo "::error::backend.hcl missing"; exit 1; }
+      - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -39,47 +23,45 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.5
 
       - name: Prep plugin cache
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-      - name: Sanity check path has .tf files
-        shell: bash
+      - name: Find Terraform directories
+        id: find
         run: |
           set -euo pipefail
-          d="${{ inputs.dir }}"
-          [ -d "$d" ] || { echo "::error::Directory '$d' not found"; exit 1; }
-          if ! find "$d" -maxdepth 1 -name '*.tf' -print -quit | grep -q .; then
-            echo "::error::No *.tf files in '$d'"; exit 1
-          fi
-
-      - name: Init (with S3 backend from backend.hcl)
-        working-directory: ${{ inputs.dir }}
-        shell: bash
-        run: |
-          if [ "${{ inputs.dir }}" = "." ]; then
-            KEY_SUFFIX="root/terraform.tfstate"
+          mapfile -t DIRS < <(git ls-files -z '*.tf' | xargs -0 -n1 dirname | sort -u)
+          if [ ${#DIRS[@]} -eq 0 ]; then
+            echo "dirs=[]" >> $GITHUB_OUTPUT
           else
-            KEY_SUFFIX="${{ inputs.dir }}/terraform.tfstate"
+            JSON=$(printf '%s\n' "${DIRS[@]}" | jq -R -s -c 'split("\n")[:-1]')
+            echo "dirs=$JSON" >> $GITHUB_OUTPUT
           fi
-          KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
 
-          terraform init -input=false -upgrade -reconfigure \
-            -backend-config="${GITHUB_WORKSPACE}/backend.hcl" \
-            -backend-config="key=${KEY}"
+      - name: Apply each directory
+        if: steps.find.outputs.dirs != '[]'
+        run: |
+          set -euo pipefail
+          for d in $(echo '${{ steps.find.outputs.dirs }}' | jq -r '.[]'); do
+            echo "=== Applying $d ==="
+            pushd "$d" >/dev/null
 
-      - name: Validate
-        working-directory: ${{ inputs.dir }}
-        run: terraform validate
+            if [ "$d" = "." ]; then
+              KEY_SUFFIX="root/terraform.tfstate"
+            else
+              KEY_SUFFIX="$d/terraform.tfstate"
+            fi
+            KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
 
-      - name: Plan
-        working-directory: ${{ inputs.dir }}
-        run: terraform plan -input=false -out=tfplan
+            terraform init -input=false -reconfigure \
+              -backend-config="${GITHUB_WORKSPACE}/backend.hcl" \
+              -backend-config="key=${KEY}"
 
-      - name: Apply (manual)
-        working-directory: ${{ inputs.dir }}
-        run: terraform apply -input=false -auto-approve tfplan 
+            terraform apply -input=false -auto-approve tfplan || terraform apply -input=false -auto-approve
+
+            popd >/dev/null
+          done
