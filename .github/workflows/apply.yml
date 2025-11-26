@@ -57,8 +57,7 @@ jobs:
             fi
             KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
 
-            terraform init -input=false -upgrade -reconfigure \
-              -backend-config="key=${KEY}"
+            terraform init -input=false -upgrade -reconfigure
 
             if [ -f tfplan ]; then
               terraform apply -input=false -auto-approve tfplan
