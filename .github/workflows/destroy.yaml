@@ -62,11 +62,11 @@ jobs:
             fi
             KEY="${GITHUB_REPOSITORY}/${KEY_SUFFIX}"
 
-            terraform init -input=false -upgrade -reconfigure \
-              -backend-config="key=${KEY}"
+            terraform init -input=false -upgrade -reconfigure
 
             echo "⚠️ Destroying resources in $d"
             terraform destroy -input=false -auto-approve
 
             popd >/dev/null
+
           done
