@@ -12,7 +12,6 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
 
 jobs:
   plan:
