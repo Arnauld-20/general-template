@@ -3,10 +3,10 @@ terraform {
   required_version = ">= 1.8.0"
 
   backend "s3" {
-    bucket         = "git@github.com:Arnauld-20/general-template.git"
-    key            = "cmonthe2/repo/terraform.tfstate"
+    bucket         = "arnauld-bucket-0828"
+    key            = "Arnauld-20/repo_terraform/terraform.tfstate"
     region         = "us-east-1"
-    dynamodb_table = "tf-locks"
+    dynamodb_table = "terraform-state-locks"
     encrypt        = true
   }
 
@@ -26,3 +26,4 @@ provider "aws" {
     }
   }
 }
+
